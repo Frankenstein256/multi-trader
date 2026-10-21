@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Multi-Account Trader</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#14171f;--muted:#6b7280;--line:#e3e5ea;--accent:#2563eb;--buy:#16a34a;--sell:#dc2626;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#171b22;--text:#e8eaf0;--muted:#8b93a3;--line:#262c37;--accent:#4f8cff;--buy:#22c55e;--sell:#f05252;--warn:#f59e0b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;padding-bottom:80px}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+header h1{font-size:17px;margin:0}
+.mode{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.mode button{border:0;background:none;color:var(--muted);padding:7px 14px;font-weight:600;font-size:14px}
+.mode button.on{background:var(--accent);color:#fff}
+main{max-width:720px;margin:0 auto;padding:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.muted{color:var(--muted);font-size:13px}
+.big{font-size:22px;font-weight:700}
+.pos{font-size:14px;border-top:1px solid var(--line);padding:8px 0 0;margin-top:8px}
+.buy{color:var(--buy)}.sell{color:var(--sell)}.err{color:var(--sell);font-size:14px}.ok{color:var(--buy);font-size:14px}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+input[type=text],input[type=number],select{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font-size:16px}
+button.btn{width:100%;padding:14px;border:0;border-radius:12px;font-size:17px;font-weight:700;color:#fff;background:var(--accent);margin-top:12px}
+button.btn.sm{width:auto;padding:9px 14px;font-size:14px;margin:0}
+button.btn.gray{background:var(--muted)}button.btn.red{background:var(--sell)}button.btn.green{background:var(--buy)}
+.seg{display:flex;gap:8px}.seg button{flex:1;padding:14px;border-radius:12px;border:2px solid var(--line);background:var(--bg);color:var(--text);font-weight:700;font-size:16px}
+.seg button.on.b{background:var(--buy);border-color:var(--buy);color:#fff}.seg button.on.s{background:var(--sell);border-color:var(--sell);color:#fff}
+.chk{display:flex;align-items:center;gap:10px;padding:6px 0}.chk input{width:22px;height:22px}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;border:0;background:none;color:var(--muted);padding:14px 4px;font-size:14px;font-weight:600}
+nav button.on{color:var(--accent)}
+.hide{display:none}.badge{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--bg);border:1px solid var(--line)}
+.warn{color:var(--warn);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Multi-Account Trader</h1>
+  <div class="mode" id="modeBox"><button data-m="manual">Manual</button><button data-m="auto">Auto</button></div>
+</header>
+<main>
+  <section id="tab-accounts"></section>
+  <section id="tab-trade" class="hide"></section>
+  <section id="tab-signals" class="hide"></section>
+  <section id="tab-settings" class="hide"></section>
+</main>
+<nav id="nav">
+  <button data-t="accounts" class="on">Accounts</button><button data-t="trade">Trade</button>
+  <button data-t="signals">Signals</button><button data-t="settings">Settings</button>
+</nav>
+<script>
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S={mode:'manual',accounts:[],signals:[],metaapi_ready:false},tab='accounts',side='BUY',picked=null,lastResult='',formDirty=false;
+
+async function api(path,method='GET',body){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  if(!r.ok){let m=r.statusText;try{const j=await r.json();m=typeof j.detail==='string'?j.detail:JSON.stringify(j.detail||j)}catch(e){}throw new Error(m)}
+  return r.json();
+}
+function money(n,c){return (Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:2})+' '+esc(c||'')}
+function resultsHtml(rs){return (rs||[]).map(r=>r.ok
+  ?`<div class="ok">✔ ${esc(r.account)}: ${r.lots!==undefined?esc(r.lots)+' lots '+esc(r.symbol):'closed '+esc(r.closed)} <span class="muted">${esc(r.ms??'')}${r.ms!==undefined?' ms':''}</span></div>`
+  :`<div class="err">✖ ${esc(r.account)}: ${esc(r.error)}</div>`).join('')}
+
+function renderMode(){document.querySelectorAll('#modeBox button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.mode))}
+
+function renderAccounts(){
+  const el=$('#tab-accounts');
+  if(!S.accounts.length){el.innerHTML='<div class="card">No accounts yet. Go to <b>Settings</b> and add one (use <b>paper</b> as the account id to test for free).</div>';return}
+  el.innerHTML=S.accounts.map(a=>{
+    const i=a.info,p=a.positions||[];
+    return `<div class="card"><div class="row"><b>${esc(a.label)}</b><span class="badge">${a.enabled===false?'disabled':esc(a.risk_percent)+'% risk'}</span></div>
+    ${a.error?`<div class="err">${esc(a.error)}</div>`:`<div class="big">${money(i?.equity,i?.currency)}</div>
+    <div class="muted">Balance ${money(i?.balance,i?.currency)} · ${p.length} open</div>`}
+    ${p.map(x=>`<div class="pos row"><span><b class="${x.side==='BUY'?'buy':'sell'}">${esc(x.side)}</b> ${esc(x.symbol)} ${esc(x.volume)}</span><span class="muted">SL ${esc(x.sl||'-')} · TP ${esc(x.tp||'-')}</span></div>`).join('')}</div>`}).join('')
+}
+
+function renderTrade(){
+  if(formDirty) return;
+  const el=$('#tab-trade');
+  const en=S.accounts.filter(a=>a.enabled!==false);
+  if(!picked) picked=new Set(en.map(a=>a.id));
+  el.innerHTML=`<div class="card">
+  <label>Symbol</label><input type="text" id="t_sym" placeholder="EURUSD" autocapitalize="characters">
+  <label>Direction</label><div class="seg"><button class="b ${side==='BUY'?'on':''}" data-s="BUY">BUY</button><button class="s ${side==='SELL'?'on':''}" data-s="SELL">SELL</button></div>
+  <label>Stop-loss price</label><input type="number" step="any" id="t_sl" inputmode="decimal">
+  <label>Take-profit price (optional)</label><input type="number" step="any" id="t_tp" inputmode="decimal">
+  <label>Risk % override (optional — blank = each account's own risk)</label><input type="number" step="any" id="t_risk" inputmode="decimal">
+  <label>Accounts</label>${en.map(a=>`<label class="chk"><input type="checkbox" data-a="${esc(a.id)}" ${picked.has(a.id)?'checked':''}> ${esc(a.label)} <span class="muted">(${esc(a.risk_percent)}%)</span></label>`).join('')||'<div class="muted">No enabled accounts</div>'}
+  <button class="btn" id="goTrade">Execute on <span id="cnt">${picked.size}</span> account(s)</button>
+  <div id="tradeOut" style="margin-top:10px">${lastResult}</div></div>
+  <div class="card"><b>Close trades</b><div class="muted">Only closes trades opened by this app.</div>
+  <button class="btn gray" id="closeSym">Close trades on the symbol above</button>
+  <button class="btn red" id="closeAll">Close ALL app trades</button></div>`;
+}
+
+function renderSignals(){
+  const el=$('#tab-signals');
+  if(!S.signals.length){el.innerHTML='<div class="card">No signals yet. Send a TradingView alert to <code>/webhook</code> and it will show up here.</div>';return}
+  el.innerHTML=S.signals.map(s=>`<div class="card"><div class="row"><b class="${s.action==='BUY'?'buy':s.action==='SELL'?'sell':''}">${esc(s.action)} ${esc(s.symbol)}</b><span class="badge">${esc(s.status)}</span></div>
+   <div class="muted">${new Date(s.time*1000).toLocaleString()} · SL ${esc(s.sl||'-')} · TP ${esc(s.tp||'-')}</div>
+   ${s.status==='pending'?`<div class="row" style="margin-top:10px"><button class="btn sm green" data-take="${esc(s.id)}">Take trade</button><button class="btn sm gray" data-dis="${esc(s.id)}">Dismiss</button></div>`:''}
+   ${resultsHtml(s.results)}</div>`).join('')
+}
+
+function renderSettings(){
+  const el=$('#tab-settings');
+  if(el.dataset.busy) return;
+  el.innerHTML=`<div class="card"><b>Add account</b>
+  ${S.metaapi_ready?'':'<div class="warn">MetaApi token not set on the server — only <b>paper</b> accounts will work.</div>'}
+  <label>Name</label><input type="text" id="a_label" placeholder="FTMO 100k">
+  <label>MetaApi account ID (or type: paper)</label><input type="text" id="a_mid" placeholder="paper" autocapitalize="off">
+  <label>Risk % per trade</label><input type="number" step="any" id="a_risk" value="1" inputmode="decimal">
+  <label>Symbol suffix (optional, e.g. m or .a)</label><input type="text" id="a_suf" autocapitalize="off">
+  <label>Max lot (optional)</label><input type="number" step="any" id="a_max" inputmode="decimal">
+  <button class="btn" id="addAcct">Save account</button><div id="setOut" class="muted"></div></div>
+  <div class="card"><b>Your accounts</b>${S.accounts.map(a=>`<div class="row pos"><span>${esc(a.label)} <span class="muted">${esc(a.metaapi_id.slice(0,10))} · ${esc(a.risk_percent)}%</span></span>
+   <span><button class="btn sm gray" data-tog="${esc(a.id)}">${a.enabled===false?'Enable':'Disable'}</button> <button class="btn sm red" data-del="${esc(a.id)}">Delete</button></span></div>`).join('')||'<div class="muted">None</div>'}</div>
+  <div class="card"><b>Mode</b><div class="muted"><b>Manual</b>: webhook signals wait in the Signals tab for you to tap “Take trade”.<br><b>Auto</b>: signals trade immediately on all enabled accounts. Switch at the top.</div></div>`;
+}
+
+function render(){renderMode();({accounts:renderAccounts,trade:renderTrade,signals:renderSignals,settings:renderSettings})[tab]()}
+async function refresh(){try{S=await api('/api/state');render()}catch(e){$('#tab-'+tab).insertAdjacentHTML('afterbegin',`<div class="card err">${esc(e.message)}</div>`)}}
+
+document.addEventListener('input',e=>{if(tab==='trade')formDirty=true;if(tab==='settings')$('#tab-settings').dataset.busy=1});
+document.addEventListener('click',async e=>{
+  const t=e.target.closest('button'),c=e.target;
+  if(c.matches('input[data-a]')){c.checked?picked.add(c.dataset.a):picked.delete(c.dataset.a);$('#cnt').textContent=picked.size;return}
+  if(!t)return;
+  try{
+    if(t.closest('#nav')){tab=t.dataset.t;document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b===t));
+      ['accounts','trade','signals','settings'].forEach(n=>$('#tab-'+n).classList.toggle('hide',n!==tab));render();return}
+    if(t.dataset.m){await api('/api/mode','POST',{mode:t.dataset.m});S.mode=t.dataset.m;renderMode();return}
+    if(t.dataset.s){side=t.dataset.s;formDirty=true;document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('on',b.dataset.s===side));return}
+    if(t.id==='goTrade'){
+      const sl=parseFloat($('#t_sl').value),tp=parseFloat($('#t_tp').value),rk=parseFloat($('#t_risk').value);
+      if(!$('#t_sym').value.trim()||!sl){$('#tradeOut').innerHTML='<div class="err">Symbol and stop-loss are required</div>';return}
+      if(!picked.size){$('#tradeOut').innerHTML='<div class="err">Pick at least one account</div>';return}
+      t.disabled=true;t.textContent='Executing…';
+      const r=await api('/api/trade','POST',{symbol:$('#t_sym').value,side,sl,tp:tp||null,risk_percent:rk||null,accounts:[...picked]});
+      lastResult=resultsHtml(r.results);formDirty=false;renderTrade();formDirty=true;refresh();return}
+    if(t.id==='closeSym'||t.id==='closeAll'){
+      const sym=t.id==='closeSym'?$('#t_sym').value.trim():null;
+      if(t.id==='closeSym'&&!sym){alert('Type the symbol first');return}
+      if(!confirm(sym?`Close ${sym} trades?`:'Close ALL trades opened by this app?'))return;
+      const r=await api('/api/close','POST',{symbol:sym||null,accounts:[...picked]});
+      $('#tradeOut').innerHTML=resultsHtml(r.results);refresh();return}
+    if(t.dataset.take){t.disabled=true;await api(`/api/signals/${t.dataset.take}/take`,'POST');refresh();return}
+    if(t.dataset.dis){await api(`/api/signals/${t.dataset.dis}/dismiss`,'POST');refresh();return}
+    if(t.id==='addAcct'){
+      const label=$('#a_label').value.trim(),mid=$('#a_mid').value.trim();
+      if(!label||!mid){$('#setOut').textContent='Name and account ID are required';return}
+      await api('/api/accounts','POST',{label,metaapi_id:mid,risk_percent:parseFloat($('#a_risk').value)||1,suffix:$('#a_suf').value.trim(),max_lot:parseFloat($('#a_max').value)||null,enabled:true});
+      delete $('#tab-settings').dataset.busy;picked=null;formDirty=false;refresh();return}
+    if(t.dataset.tog){const a=S.accounts.find(x=>x.id===t.dataset.tog);
+      const{info,positions,error,...rest}=a;await api('/api/accounts','POST',{...rest,enabled:a.enabled===false});picked=null;formDirty=false;refresh();return}
+    if(t.dataset.del){if(confirm('Delete this account?')){await api('/api/accounts/'+t.dataset.del,'DELETE');picked=null;refresh()}return}
+  }catch(err){alert(err.message);if(t&&t.disabled){t.disabled=false}}
+});
+refresh();setInterval(()=>{if(!document.hidden&&tab!=='settings'&&!(tab==='trade'&&formDirty))refresh()},10000);
+</script>
+</body>
+</html>
